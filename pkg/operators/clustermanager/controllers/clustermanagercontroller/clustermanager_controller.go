@@ -138,6 +138,7 @@ func (n *clusterManagerController) sync(ctx context.Context, controllerContext f
 		RegistrationImage:       clusterManager.Spec.RegistrationImagePullSpec,
 		WorkImage:               clusterManager.Spec.WorkImagePullSpec,
 		PlacementImage:          clusterManager.Spec.PlacementImagePullSpec,
+		AddOnManagerImage:       clusterManager.Spec.AddOnManagerImagePullSpec,
 		Replica:                 helpers.DetermineReplica(ctx, n.operatorKubeClient, clusterManager.Spec.DeployOption.Mode, nil),
 		HostedMode:              clusterManager.Spec.DeployOption.Mode == operatorapiv1.InstallModeHosted,
 		RegistrationWebhook: manifests.Webhook{
@@ -146,6 +147,10 @@ func (n *clusterManagerController) sync(ctx context.Context, controllerContext f
 		WorkWebhook: manifests.Webhook{
 			Port: defaultWebhookPort,
 		},
+	}
+
+	if clusterManager.Spec.AddOnManagerConfiguration != nil {
+		config.AddOnManagerComponentMode = string(clusterManager.Spec.AddOnManagerConfiguration.Mode)
 	}
 
 	var featureGateCondition metav1.Condition

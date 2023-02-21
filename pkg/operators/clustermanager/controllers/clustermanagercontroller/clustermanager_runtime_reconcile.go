@@ -30,6 +30,10 @@ var (
 		"cluster-manager/management/cluster-manager-work-webhook-deployment.yaml",
 		"cluster-manager/management/cluster-manager-placement-deployment.yaml",
 	}
+
+	addOnManagerDeploymentFiles = []string{
+		"cluster-manager/management/cluster-manager-addon-manager-deployment.yaml",
+	}
 )
 
 type runtimeReconcile struct {
@@ -44,6 +48,14 @@ type runtimeReconcile struct {
 }
 
 func (c *runtimeReconcile) reconcile(ctx context.Context, cm *operatorapiv1.ClusterManager, config manifests.HubConfig) (*operatorapiv1.ClusterManager, reconcileState, error) {
+	// If AddOnManager is not enabled, remove related resources
+	if operatorapiv1.ComponentModeType(config.AddOnManagerComponentMode) != operatorapiv1.ComponentModeTypeEnable {
+		_, _, err := cleanResources(ctx, c.kubeClient, cm, config, addOnManagerDeploymentFiles...)
+		if err != nil {
+			return cm, reconcileStop, err
+		}
+	}
+
 	// In the Hosted mode, ensure the rbac kubeconfig secrets is existed for deployments to mount.
 	// In this step, we get serviceaccount token from the hub cluster to form a kubeconfig and set it as a secret on the management cluster.
 	// Before this step, the serviceaccounts in the hub cluster and the namespace in the management cluster should be applied first.
@@ -90,7 +102,11 @@ func (c *runtimeReconcile) reconcile(ctx context.Context, cm *operatorapiv1.Clus
 	}
 
 	var progressingDeployments []string
-	for _, file := range deploymentFiles {
+	deployResources := deploymentFiles
+	if operatorapiv1.ComponentModeType(config.AddOnManagerComponentMode) == operatorapiv1.ComponentModeTypeEnable {
+		deployResources = append(deployResources, addOnManagerDeploymentFiles...)
+	}
+	for _, file := range deployResources {
 		updatedDeployment, currentGeneration, err := helpers.ApplyDeployment(
 			ctx,
 			c.kubeClient,
@@ -150,6 +166,7 @@ func (c *runtimeReconcile) reconcile(ctx context.Context, cm *operatorapiv1.Clus
 func (c *runtimeReconcile) clean(ctx context.Context, cm *operatorapiv1.ClusterManager, config manifests.HubConfig) (*operatorapiv1.ClusterManager, reconcileState, error) {
 	// Remove All Static files
 	managementResources := []string{namespaceResource} // because namespace is removed, we don't need to remove deployments explicitly
+
 	for _, file := range managementResources {
 		err := helpers.CleanUpStaticObject(
 			ctx,
@@ -179,4 +196,28 @@ func getSAs(clusterManagerName string) []string {
 		clusterManagerName + "-work-webhook-sa",
 		clusterManagerName + "-placement-controller-sa",
 	}
+}
+
+func cleanResources(ctx context.Context, kubeClient kubernetes.Interface, cm *operatorapiv1.ClusterManager, config manifests.HubConfig, resources ...string) (*operatorapiv1.ClusterManager, reconcileState, error) {
+	// clean specified resources
+	for _, file := range resources {
+		err := helpers.CleanUpStaticObject(
+			ctx,
+			kubeClient, nil, nil,
+			func(name string) ([]byte, error) {
+				template, err := manifests.ClusterManagerManifestFiles.ReadFile(name)
+				if err != nil {
+					return nil, err
+				}
+				objData := assets.MustCreateAssetFromTemplate(name, template, config).Data
+				helpers.RemoveRelatedResourcesStatusesWithObj(&cm.Status.RelatedResources, objData)
+				return objData, nil
+			},
+			file,
+		)
+		if err != nil {
+			return cm, reconcileContinue, err
+		}
+	}
+	return cm, reconcileContinue, nil
 }
